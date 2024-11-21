@@ -1,6 +1,6 @@
 ## **Building an End-to-End Data Pipeline with MS SQL Server**
 ## **Overview**
-This tutorial outlines building an end-to-end data pipeline using **MS SQL Server**. The pipeline covers collecting data from two sources, cleaning and merging the data, and scheduling automatic updates to maintain data freshness. The two (2) data sources: (1)[Consumer Financial Protection Bureau (CFPB) API](https://catalog.data.gov/dataset/consumer-complaint-database); (2) [Demographic Data](https://www.kaggle.com/datasets/bitrook/us-county-historical-demographics?select=us_county_demographics.json).
+This project outlines building an end-to-end data pipeline using **MS SQL Server**. The pipeline covers collecting data from two sources, cleaning and merging the data, and scheduling automatic updates to maintain data freshness. The two (2) data sources: (1)[Consumer Financial Protection Bureau (CFPB) API](https://catalog.data.gov/dataset/consumer-complaint-database); (2) [Demographic Data](https://www.kaggle.com/datasets/bitrook/us-county-historical-demographics?select=us_county_demographics.json).
 
 ## **Step 1: Setting Up MS SQL Server**
 
@@ -25,14 +25,13 @@ To collect data from the Consumer Financial Protection Bureau (CFPB) API and sto
 Here is a complete Python script for this purpose:
 
 ### Prerequisites
-
+- Install Python 3.x and `ODBC Driver 17 for SQL Server` on your system
 - Install the required Python libraries:
   ```bash
   pip install requests pyodbc
   ```
-
-- Set up an MS SQL Server database and create a table to store the data. For example:
-  ```sql
+- Create the `Complaints` Table in the `DataPipelineDB` database:
+ ```sql
   CREATE TABLE Complaints (
       id INT PRIMARY KEY,
       product NVARCHAR(255),
@@ -42,105 +41,191 @@ Here is a complete Python script for this purpose:
       submitted_via NVARCHAR(255),
       date_received DATE
   );
-  ```
+  ``` 
+
+## Authentication Options
+There are three (3) MS SQL SERVER authentication options: **Windows Authentication**, **SQL Server Authentication**, and **Mixed Mode Authentication**.
+
+### 1. **Windows Authentication**
+Use the current Windows user to connect. Update `DB_CONNECTION`:
+```python
+DB_CONNECTION = {
+    'server': r'YourServerName\Instance',
+    'database': 'YourDatabaseName'
+}
+```
+Use `Trusted_Connection=yes` in the connection string.
+
+**Use Case**: For environments where users are managed via Active Directory.
+
+**Setup**: No configuration changes if SQL Server is set to "Windows Authentication Mode".
+
+### 2. **SQL Server Authentication**
+Authenticate with a SQL Server username and password:
+```python
+DB_CONNECTION = {
+    'server': r'YourServerName\Instance',
+    'database': 'YourDatabaseName',
+    'username': 'YourUsername',
+    'password': 'YourPassword'
+}
+```
+
+**Use Case**: When access is needed without a Windows user (e.g., cross-platform applications).
+
+**Setup**: 
+1. Enable "Mixed Mode Authentication" in SSMS: 
+   - Right-click Server → **Properties** → **Security** → Select "SQL Server and Windows Authentication Mode".
+2. Create a SQL Server login:
+   ```sql
+   CREATE LOGIN YourUsername WITH PASSWORD = 'YourPassword';
+   CREATE USER YourUsername FOR LOGIN YourUsername;
+   EXEC sp_addrolemember 'db_datareader', YourUsername;
+   EXEC sp_addrolemember 'db_datawriter', YourUsername;
+   ```
+
+### 3. **Mixed Mode Authentication**
+Supports both Windows and SQL Server Authentication.
+
+**Use Case**: For flexibility to allow both approaches.
+
+**Setup**: 
+1. Enable "SQL Server and Windows Authentication Mode" in SSMS as above.
+2. Use either Windows or SQL credentials as needed.
+
+## Usage
+1. Configure `DB_CONNECTION` based on your authentication choice.
+2. Run the script:
+   ```bash
+   python script.py
+   ```
+This project uses the `Windows Authentication Mode`. The `SQL Server Authentication Mode` is generally used in industry settings.
 
 ### Python Script
 
 ```python
 import requests
+import pandas as pd
 import pyodbc
-
-# Define the API URL
-API_URL = "https://cfpb.github.io/api/ccdb/api.html"
+import os
 
 # Database connection parameters
 DB_CONNECTION = {
-    'server': 'your_server_name',  # Replace with your server name
-    'database': 'your_database_name',  # Replace with your database name
-    'username': 'your_username',  # Replace with your username
-    'password': 'your_password',  # Replace with your password
+    'server': r'Your-server-name\Instance',
+    'database': 'Your-database-name'
 }
 
-def fetch_data(api_url):
+# URL for the Consumer Complaint Database CSV file
+CSV_URL = "https://files.consumerfinance.gov/ccdb/complaints.csv.zip"
+
+def download_csv_file(url, output_file):
     """
-    Fetch data from the API.
+    Download the CSV file from the given URL and save it locally.
     """
     try:
-        response = requests.get(api_url)
+        print("Downloading CSV file...")
+        response = requests.get(url, stream=True)
         response.raise_for_status()
-        return response.json()
+        with open(output_file, 'wb') as file:
+            for chunk in response.iter_content(chunk_size=1024):
+                file.write(chunk)
+        print(f"File downloaded: {output_file}")
     except requests.RequestException as e:
-        print(f"Error fetching data: {e}")
+        print(f"Error downloading CSV file: {e}")
+
+def extract_and_read_csv(zip_file):
+    """
+    Extract and load the CSV data from the ZIP file.
+    """
+    try:
+        print("Extracting CSV file...")
+        extracted_file = pd.read_csv(zip_file, compression='zip', low_memory=False)
+        print("CSV file extracted and read.")
+        return extracted_file
+    except Exception as e:
+        print(f"Error extracting and reading CSV file: {e}")
+        return None
+
+def clean_data(row):
+    """
+    Clean and validate data for insertion into SQL Server.
+    """
+    try:
+        # Validate or cast data types
+        return {
+            "complaint_id": int(row.get("Complaint ID")) if row.get("Complaint ID") else None,
+            "product": str(row.get("Product")) if row.get("Product") else None,
+            "issue": str(row.get("Issue")) if row.get("Issue") else None,
+            "company": str(row.get("Company")) if row.get("Company") else None,
+            "state": str(row.get("State")) if row.get("State") else None,
+            "submitted_via": str(row.get("Submitted via")) if row.get("Submitted via") else None,
+            "date_received": pd.to_datetime(row.get("Date received"), errors='coerce').date() if row.get("Date received") else None,
+        }
+    except Exception as e:
+        print(f"Error cleaning row: {row} - {e}")
         return None
 
 def store_data_in_sql(data, connection_params):
     """
-    Store the data in MS SQL Server.
+    Store the data in MS SQL Server using Windows Authentication.
     """
+    conn = None
     try:
-        # Establish the database connection
+        print("Connecting to the database...")
         conn = pyodbc.connect(
             f"DRIVER={{ODBC Driver 17 for SQL Server}};"
             f"SERVER={connection_params['server']};"
             f"DATABASE={connection_params['database']};"
-            f"UID={connection_params['username']};"
-            f"PWD={connection_params['password']}"
+            "Trusted_Connection=yes;"
         )
         cursor = conn.cursor()
 
-        # Insert data into the table
-        for record in data:
-            cursor.execute("""
-                INSERT INTO Complaints (id, product, issue, company, state, submitted_via, date_received)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                record.get("complaint_id"),
-                record.get("product"),
-                record.get("issue"),
-                record.get("company"),
-                record.get("state"),
-                record.get("submitted_via"),
-                record.get("date_received"),
-            ))
+        print("Inserting data into the database...")
+        for _, row in data.iterrows():
+            cleaned_row = clean_data(row)
+            if cleaned_row:
+                cursor.execute("""
+                    INSERT INTO Complaints (id, product, issue, company, state, submitted_via, date_received)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    cleaned_row["complaint_id"],
+                    cleaned_row["product"],
+                    cleaned_row["issue"],
+                    cleaned_row["company"],
+                    cleaned_row["state"],
+                    cleaned_row["submitted_via"],
+                    cleaned_row["date_received"],
+                ))
 
-        # Commit the transaction
         conn.commit()
         print("Data stored successfully.")
-
     except Exception as e:
         print(f"Error storing data in SQL Server: {e}")
-
     finally:
-        # Close the connection
-        conn.close()
-
+        if conn:
+            conn.close()
 def main():
-    # Fetch data from the API
-    print("Fetching data from API...")
-    api_data = fetch_data(API_URL)
+    # Define file paths
+    zip_file = "complaints.csv.zip"
 
-    if not api_data:
-        print("No data retrieved from the API.")
-        return
+    # Download and process the CSV file
+    download_csv_file(CSV_URL, zip_file)
+    data = extract_and_read_csv(zip_file)
 
-    # Extract relevant data
-    records = api_data.get("hits", {}).get("hits", [])
-    formatted_data = [
-        {
-            "complaint_id": record["_id"],
-            "product": record["_source"].get("product"),
-            "issue": record["_source"].get("issue"),
-            "company": record["_source"].get("company"),
-            "state": record["_source"].get("state"),
-            "submitted_via": record["_source"].get("submitted_via"),
-            "date_received": record["_source"].get("date_received"),
-        }
-        for record in records
-    ]
+    if data is not None:
+        # Preprocess the data (optional cleanup or filtering can be added here)
+        print("Processing data for storage...")
+        data = data[['Complaint ID', 'Product', 'Issue', 'Company', 'State', 'Submitted via', 'Date received']]
 
-    # Store data in SQL Server
-    print("Storing data in MS SQL Server...")
-    store_data_in_sql(formatted_data, DB_CONNECTION)
+        # Store data in SQL Server
+        store_data_in_sql(data, DB_CONNECTION)
+    else:
+        print("No data to store.")
+
+    # Clean up downloaded files
+    if os.path.exists(zip_file):
+        os.remove(zip_file)
+        print("Temporary files cleaned up.")
 
 if __name__ == "__main__":
     main()
@@ -153,12 +238,10 @@ if __name__ == "__main__":
 3. **Database Insertion**: The `store_data_in_sql` function establishes a connection to MS SQL Server using `pyodbc` and inserts data into the specified table.
 4. **Execution**: The `main` function orchestrates the data fetching and storing process.
 
-### Notes
-- Replace placeholders (`your_server_name`, `your_database_name`, etc.) with actual values.
+### Note
 - The script assumes the API response structure is consistent with the example provided. Adjust fields as necessary.
-- Ensure the `ODBC Driver 17 for SQL Server` is installed on your system.
 
-### **2.2 Data Source 2: REST API**
+### **2.2 Data Source 2: KAGGLE API**
 ```python
 import pandas as pd
 from sqlalchemy import create_engine
