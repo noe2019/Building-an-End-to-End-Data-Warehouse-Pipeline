@@ -435,9 +435,3 @@ ON s1.ID = s2.ForeignID;
 
 ## **Step 6: Monitoring**
 - Use the **SQL Server Agent Logs** and query execution plans to monitor and optimize performance.
-
-## **Summary**
-1. Import data from **CSV files** and **REST APIs**.
-2. Clean and standardize the data using SQL queries.
-3. Merge the datasets into a unified table.
-4. Automate updates with SQL Server Agent.
