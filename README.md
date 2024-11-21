@@ -25,7 +25,7 @@ This tutorial outlines building an end-to-end data pipeline using **MS SQL Serve
 
 2. **Verify Imported Data**:
    ```sql
-   SELECT * FROM Source1Table;
+   SELECT * FROM ComplainTable;
    ```
 
 ### **2.2 Data Source 2: REST API**
