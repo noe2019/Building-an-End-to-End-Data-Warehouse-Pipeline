@@ -241,77 +241,131 @@ if __name__ == "__main__":
 ### Note
 - The script assumes the API response structure is consistent with the example provided. Adjust fields as necessary.
 
-### **2.2 Data Source 2: KAGGLE API**
+### **2.2 Data Source 2: FROM KAGGLE API**
 ```python
+import kagglehub
 import pandas as pd
-from sqlalchemy import create_engine
-import json
+import os
+import pyodbc
+import time
 
-# Step 1: Load the dataset
-file_path = "path_to_your_file/us_county_demographics.json"  # Replace with the actual file path
+def download_with_retries(dataset_handle, max_retries=3, wait_time=10):
+    """
+    Download Kaggle dataset with retry logic.
+    """
+    for attempt in range(max_retries):
+        try:
+            print(f"Attempt {attempt + 1} of {max_retries}: Downloading dataset...")
+            dataset_path = kagglehub.dataset_download(dataset_handle)
+            print("Dataset downloaded successfully!")
+            return dataset_path
+        except Exception as e:
+            print(f"Download failed: {e}")
+            if attempt < max_retries - 1:
+                print(f"Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                print("Max retries reached. Exiting.")
+                raise
+
+# Step 1: Download dataset with retry logic
 try:
-    # Load the JSON file into a pandas DataFrame
-    with open(file_path, 'r') as f:
-        data_json = json.load(f)
-    data = pd.DataFrame(data_json)
-    print("Dataset loaded successfully!")
+    dataset_handle = "bitrook/us-county-historical-demographics"
+    dataset_path = download_with_retries(dataset_handle)
 except Exception as e:
-    print(f"Error loading dataset: {e}")
+    print(f"Failed to download dataset: {e}")
     exit()
 
-# Step 2: Define the SQL Server connection details
-server = 'your_server_name'  # Replace with your server name, e.g., 'localhost\SQLEXPRESS'
-database = 'your_database_name'  # Replace with your database name
-username = 'your_username'  # Replace with your SQL Server username
-password = 'your_password'  # Replace with your SQL Server password
+# Step 2: Locate CSV file in the downloaded dataset folder
+csv_file = None
+for file in os.listdir(dataset_path):
+    if file.endswith(".csv"):
+        csv_file = os.path.join(dataset_path, file)
+        break
 
-# Connection string for SQL Server
-connection_string = (
-    f"mssql+pyodbc://{username}:{password}@{server}/{database}?driver=ODBC+Driver+17+for+SQL+Server"
-)
-
-# Step 3: Create the SQLAlchemy engine
-try:
-    engine = create_engine(connection_string)
-    print("Successfully connected to SQL Server!")
-except Exception as e:
-    print(f"Error connecting to SQL Server: {e}")
+if not csv_file:
+    print("No CSV file found in the downloaded dataset.")
     exit()
 
-# Step 4: Write data to SQL Server as a table
-table_name = 'us_county_demographics'  # Define your target table name
-try:
-    data.to_sql(table_name, con=engine, if_exists='replace', index=False)  # Save to table
-    print(f"Data successfully saved to the table '{table_name}' in SQL Server.")
-except Exception as e:
-    print(f"Error writing data to SQL Server: {e}")
+# Step 3: Load dataset into a Pandas DataFrame
+print("Loading dataset into a DataFrame...")
+data = pd.read_csv(csv_file)
 
-# Step 5: Close the connection
-engine.dispose()
-print("Connection closed.")
+# Step 4: Clean column names
+print("Cleaning dataset...")
+data.columns = [col.strip().replace(" ", "_") for col in data.columns]
+
+# Step 5: Database connection parameters for MS SQL Server
+DB_CONNECTION = {
+    'server': 'Your-server-name\Instance',
+    'database': 'Your-database-name',
+    'trusted_connection': 'yes'
+}
+
+# Step 6: Connect to SQL Server and create "Demographic" table
+try:
+    print("Connecting to MS SQL Server database...")
+    conn = pyodbc.connect(
+        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+        f"SERVER={DB_CONNECTION['server']};"
+        f"DATABASE={DB_CONNECTION['database']};"
+        f"Trusted_Connection={DB_CONNECTION['trusted_connection']};"
+    )
+    cursor = conn.cursor()
+
+    # Create the table if it does not exist
+    print("Creating table 'Demographic' if it doesn't exist...")
+    create_table_query = """
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Demographic' AND xtype='U')
+    CREATE TABLE Demographic (
+        ID INT IDENTITY(1,1) PRIMARY KEY,
+        County_Name NVARCHAR(255),
+        State NVARCHAR(255),
+        Year INT,
+        Population INT,
+        Median_Age FLOAT,
+        Median_Income FLOAT
+    );
+    """
+    cursor.execute(create_table_query)
+    print("Table 'Demographic' is ready.")
+
+    # Insert data into the table
+    print("Inserting data into the 'Demographic' table...")
+    for _, row in data.iterrows():
+        insert_query = """
+        INSERT INTO Demographic (County_Name, State, Year, Population, Median_Age, Median_Income)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """
+        cursor.execute(insert_query, (
+            row.get("County_Name"),
+            row.get("State"),
+            row.get("Year"),
+            row.get("Population"),
+            row.get("Median_Age"),
+            row.get("Median_Income")
+        ))
+
+    conn.commit()
+    print("Data inserted successfully.")
+
+except Exception as e:
+    print(f"Database error: {e}")
+
+finally:
+    if conn:
+        cursor.close()
+        conn.close()
+        print("Database connection closed.")
+
+# Cleanup: Optional
+print("Cleaning up temporary files...")
+if os.path.exists(dataset_path):
+    for file in os.listdir(dataset_path):
+        os.remove(os.path.join(dataset_path, file))
+    os.rmdir(dataset_path)
+print("Script completed.")
 ```
-
-### Key Notes:
-1. **JSON Parsing**: The script explicitly reads the JSON file using Python's `json` module and converts it into a `pandas.DataFrame`. Ensure the JSON structure is compatible for direct conversion into a tabular format.
-
-2. **Table Creation**:
-   - The `if_exists='replace'` parameter in `to_sql` ensures that if the table already exists, it will be dropped and recreated. Change it to `if_exists='append'` to add data to an existing table without deleting it.
-
-3. **MS SQL Server Connection**:
-   - Install the ODBC Driver for SQL Server if not already installed: [ODBC Driver 17 for SQL Server](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server).
-   - Ensure your database and credentials are properly configured in SQL Server.
-
-4. **Verification in SQL Server**:
-   - Once the script runs successfully, you can query the new table in SQL Server to ensure data has been imported:
-     ```sql
-     SELECT TOP 10 * FROM us_county_demographics;
-     ```
-
-5. **Error Handling**:
-   - The script includes error handling for JSON file loading, database connection issues, and table creation failures to assist in debugging.
-
-### Example Result
-When the script is executed, the table `us_county_demographics` will be created in the specified database, with data from the JSON file stored in tabular format. The columns will match the keys in the JSON data, and each row will represent an entry in the JSON dataset.
 ## **Step 3: Data Cleaning**
 
 ### **3.1 Cleaning Operations**
