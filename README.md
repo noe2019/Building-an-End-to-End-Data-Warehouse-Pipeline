@@ -230,7 +230,7 @@ def main():
 if __name__ == "__main__":
     main()
 ```
-[Snapshot of Dataset 1](a)
+[Snapshot of Dataset 1](Capture d’écran 2024-11-22 135736.png)
 ### Script Explanation
 
 1. **Fetching Data**: The `fetch_data` function retrieves data from the API and handles any connection errors.
