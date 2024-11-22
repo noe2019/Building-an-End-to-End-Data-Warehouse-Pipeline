@@ -240,6 +240,7 @@ if __name__ == "__main__":
 
 ### Note
 - The script assumes the API response structure is consistent with the example provided. Adjust fields as necessary.
+  ![Dataset 1](Capture20241122140053.png)
 
 ### **2.2 Data Source 2: FROM KAGGLE API**
 ```python
