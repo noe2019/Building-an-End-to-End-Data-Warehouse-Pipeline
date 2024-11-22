@@ -368,7 +368,7 @@ WITH CTE AS (
 DELETE FROM CTE WHERE RowNum > 1;
 ```
 The heading of the resulting dataset looks like this:
-![Snapshot of Dataset 2](Capture20241122135736.png)
+![Snapshot of Dataset 2](Capture20241122140053.png)
 ## **Step 4: Data Merging**
 
 ### **4.1 Combine Data from Both Sources**
