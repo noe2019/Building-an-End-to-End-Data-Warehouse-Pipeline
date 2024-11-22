@@ -230,7 +230,7 @@ def main():
 if __name__ == "__main__":
     main()
 ```
-
+[Snapshot of Dataset 1](a)
 ### Script Explanation
 
 1. **Fetching Data**: The `fetch_data` function retrieves data from the API and handles any connection errors.
@@ -244,128 +244,105 @@ if __name__ == "__main__":
 ### **2.2 Data Source 2: FROM KAGGLE API**
 ```python
 import kagglehub
+import json
 import pandas as pd
-import os
-import pyodbc
-import time
+from sqlalchemy import create_engine
 
-def download_with_retries(dataset_handle, max_retries=3, wait_time=10):
-    """
-    Download Kaggle dataset with retry logic.
-    """
-    for attempt in range(max_retries):
-        try:
-            print(f"Attempt {attempt + 1} of {max_retries}: Downloading dataset...")
-            dataset_path = kagglehub.dataset_download(dataset_handle)
-            print("Dataset downloaded successfully!")
-            return dataset_path
-        except Exception as e:
-            print(f"Download failed: {e}")
-            if attempt < max_retries - 1:
-                print(f"Retrying in {wait_time} seconds...")
-                time.sleep(wait_time)
-            else:
-                print("Max retries reached. Exiting.")
-                raise
-
-# Step 1: Download dataset with retry logic
-try:
-    dataset_handle = "bitrook/us-county-historical-demographics"
-    dataset_path = download_with_retries(dataset_handle)
-except Exception as e:
-    print(f"Failed to download dataset: {e}")
-    exit()
-
-# Step 2: Locate CSV file in the downloaded dataset folder
-csv_file = None
-for file in os.listdir(dataset_path):
-    if file.endswith(".csv"):
-        csv_file = os.path.join(dataset_path, file)
-        break
-
-if not csv_file:
-    print("No CSV file found in the downloaded dataset.")
-    exit()
-
-# Step 3: Load dataset into a Pandas DataFrame
-print("Loading dataset into a DataFrame...")
-data = pd.read_csv(csv_file)
-
-# Step 4: Clean column names
-print("Cleaning dataset...")
-data.columns = [col.strip().replace(" ", "_") for col in data.columns]
-
-# Step 5: Database connection parameters for MS SQL Server
+# Database configuration
 DB_CONNECTION = {
-    'server': 'Your-server-name\Instance',
-    'database': 'Your-database-name',
+    'server': 'DR-FOUOTSA\\SQLEXPRESS01',
+    'database': 'DataPipelineDB',
     'trusted_connection': 'yes'
 }
 
-# Step 6: Connect to SQL Server and create "Demographic" table
-try:
-    print("Connecting to MS SQL Server database...")
-    conn = pyodbc.connect(
-        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
-        f"SERVER={DB_CONNECTION['server']};"
-        f"DATABASE={DB_CONNECTION['database']};"
-        f"Trusted_Connection={DB_CONNECTION['trusted_connection']};"
+# 1. Download dataset from Kaggle
+def download_dataset():
+    """Download the dataset from Kaggle using kagglehub."""
+    path = kagglehub.dataset_download("bitrook/us-county-historical-demographics")
+    print("Path to dataset files:", path)
+    return path
+
+# 2. Load JSON data
+def load_json_from_kaggle(path):
+    """Load JSON data from the downloaded Kaggle dataset."""
+    json_file_path = f"{path}/us_county_demographics.json"
+    with open(json_file_path, 'r') as file:
+        data = json.load(file)
+    return data
+
+# 3. Transform JSON to DataFrame
+def json_to_dataframe(data):
+    """Transform JSON data into a pandas DataFrame."""
+    # Ensure data is a list
+    if not isinstance(data, list):
+        raise ValueError("Expected JSON data to be a list of records.")
+
+    records = []
+
+    for record in data:
+        base_info = {
+            "zipcode": record.get("zipcode"),
+            "major_city": record.get("major_city"),
+            "state": record.get("state"),
+            "lat": record.get("lat"),
+            "lng": record.get("lng"),
+            "county": record.get("county"),
+            "population_2010_census": record.get("population_by_gender", {}).get("summary", {}).get("total", {}).get("2010_census"),
+            "population_2019": record.get("population_by_gender", {}).get("summary", {}).get("total", {}).get("2019"),
+            "median_age_total_2019": record.get("median_age", {}).get("total", {}).get("2019"),
+            "median_age_male_2019": record.get("median_age", {}).get("male", {}).get("2019"),
+            "median_age_female_2019": record.get("median_age", {}).get("female", {}).get("2019"),
+        }
+        
+        # Population age group details (e.g., 0-4 years, 5-9 years, etc.)
+        age_groups = [
+            "0_4", "5_9", "10_14", "15_19", "20_24", "25_29",
+            "30_34", "35_39", "40_44", "45_49", "50_54", "55_59",
+            "60_64", "65_69", "70_74", "75_79", "80_84", "85_Plus"
+        ]
+        for group in age_groups:
+            group_data = record.get("population_by_age", {}).get("total", {}).get(group, {})
+            base_info[f"population_{group}_2019"] = group_data.get("2019")
+            base_info[f"population_{group}_2010_census"] = group_data.get("2010_census")
+        
+        # Append the flattened record
+        records.append(base_info)
+    
+    return pd.DataFrame(records)
+
+# 4. Save DataFrame to SQL Server
+def save_to_sql(df, table_name, db_config):
+    """Save the DataFrame to MS SQL Server."""
+    # Construct connection string for trusted connection
+    connection_string = (
+        f"mssql+pyodbc://@{db_config['server']}/{db_config['database']}?"
+        f"driver=ODBC+Driver+17+for+SQL+Server&trusted_connection={db_config['trusted_connection']}"
     )
-    cursor = conn.cursor()
+    try:
+        engine = create_engine(connection_string)
+        df.to_sql(table_name, engine, if_exists='replace', index=False)
+        print(f"Data successfully saved to table: {table_name}")
+    except Exception as e:
+        print(f"Error saving to SQL: {e}")
 
-    # Create the table if it does not exist
-    print("Creating table 'Demographic' if it doesn't exist...")
-    create_table_query = """
-    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Demographic' AND xtype='U')
-    CREATE TABLE Demographic (
-        ID INT IDENTITY(1,1) PRIMARY KEY,
-        County_Name NVARCHAR(255),
-        State NVARCHAR(255),
-        Year INT,
-        Population INT,
-        Median_Age FLOAT,
-        Median_Income FLOAT
-    );
-    """
-    cursor.execute(create_table_query)
-    print("Table 'Demographic' is ready.")
-
-    # Insert data into the table
-    print("Inserting data into the 'Demographic' table...")
-    for _, row in data.iterrows():
-        insert_query = """
-        INSERT INTO Demographic (County_Name, State, Year, Population, Median_Age, Median_Income)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """
-        cursor.execute(insert_query, (
-            row.get("County_Name"),
-            row.get("State"),
-            row.get("Year"),
-            row.get("Population"),
-            row.get("Median_Age"),
-            row.get("Median_Income")
-        ))
-
-    conn.commit()
-    print("Data inserted successfully.")
-
-except Exception as e:
-    print(f"Database error: {e}")
-
-finally:
-    if conn:
-        cursor.close()
-        conn.close()
-        print("Database connection closed.")
-
-# Cleanup: Optional
-print("Cleaning up temporary files...")
-if os.path.exists(dataset_path):
-    for file in os.listdir(dataset_path):
-        os.remove(os.path.join(dataset_path, file))
-    os.rmdir(dataset_path)
-print("Script completed.")
-```
+# 5. Main Execution
+if __name__ == "__main__":
+    # Step 1: Download Kaggle dataset
+    dataset_path = download_dataset()
+    
+    # Step 2: Load JSON data
+    json_data = load_json_from_kaggle(dataset_path)
+    
+    # Step 3: Transform JSON data to DataFrame
+    try:
+        df = json_to_dataframe(json_data)
+        print(df.head())  # Preview the data
+    except ValueError as e:
+        print(f"Error transforming JSON to DataFrame: {e}")
+    
+    # Step 4: Save DataFrame to SQL Server
+    table_name = "USCountyDemographicsDetailed"
+    save_to_sql(df, table_name, DB_CONNECTION)```
 ## **Step 3: Data Cleaning**
 
 ### **3.1 Cleaning Operations**
@@ -390,7 +367,8 @@ WITH CTE AS (
 )
 DELETE FROM CTE WHERE RowNum > 1;
 ```
-
+The heading of the resulting dataset looks like this:
+[Snapshot of Dataset 2](a)
 ## **Step 4: Data Merging**
 
 ### **4.1 Combine Data from Both Sources**
