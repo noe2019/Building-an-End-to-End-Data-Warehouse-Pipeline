@@ -238,8 +238,7 @@ if __name__ == "__main__":
 3. **Database Insertion**: The `store_data_in_sql` function establishes a connection to MS SQL Server using `pyodbc` and inserts data into the specified table.
 4. **Execution**: The `main` function orchestrates the data fetching and storing process.
 
-### Note
-- The script assumes the API response structure is consistent with the example provided. Adjust fields as necessary.
+The snapshot of the corresponding data is provided below:
   ![Dataset 1](Capture20241122140053.png)
 
 ### **2.2 Data Source 2: FROM KAGGLE API**
